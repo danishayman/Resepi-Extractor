@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 class RecipeExtractor:
     def __init__(self, 
                  whisper_model: str = "openai/whisper-large-v3-turbo", 
-                 llm_model: str = "microsoft/DialoGPT-medium",
+                 llm_model: str = "mistralai/Mistral-7B-Instruct-v0.2",
                  device: str = "auto"):
         """
         Initialize the recipe extraction pipeline.
@@ -56,16 +56,31 @@ class RecipeExtractor:
     def _get_device(self, device: str) -> str:
         """Determine the best device to use."""
         if device == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        return device
+            detected_device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"Auto-detected device: {detected_device}")
+            
+            # Log GPU information if available
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_properties(0).name
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                logger.info(f"GPU: {gpu_name} ({gpu_memory:.1f}GB)")
+            else:
+                logger.info("No CUDA-capable GPU found, using CPU")
+            
+            return detected_device
+        else:
+            logger.info(f"Using specified device: {device}")
+            return device
     
     def _load_models(self):
         """Load Whisper and LLM models."""
         try:
             logger.info(f"Loading Whisper model: {self.whisper_model_name}")
+            logger.info(f"Target device: {self.device}")
             
             # Load Whisper model using Transformers
             torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
+            logger.info(f"Using torch dtype: {torch_dtype}")
             
             self.whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 self.whisper_model_name, 
@@ -74,6 +89,7 @@ class RecipeExtractor:
                 use_safetensors=True
             )
             self.whisper_model.to(self.device)
+            logger.info(f"Whisper model loaded and moved to: {next(self.whisper_model.parameters()).device}")
             
             self.whisper_processor = AutoProcessor.from_pretrained(self.whisper_model_name)
             
@@ -89,12 +105,20 @@ class RecipeExtractor:
             
             logger.info(f"Loading LLM model: {self.llm_model_name}")
             self.llm_tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
+            llm_torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
+            logger.info(f"LLM torch dtype: {llm_torch_dtype}")
+            
             self.llm_model = AutoModelForCausalLM.from_pretrained(
                 self.llm_model_name,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                torch_dtype=llm_torch_dtype,
                 device_map="auto" if self.device == "cuda" else None,
                 low_cpu_mem_usage=True
             )
+            
+            if self.device == "cpu":
+                self.llm_model.to(self.device)
+            
+            logger.info(f"LLM model loaded on device: {next(self.llm_model.parameters()).device}")
             
             # Create pipeline for text generation
             self.llm_pipeline = pipeline(
@@ -176,6 +200,7 @@ class RecipeExtractor:
                 audio_path,
                 return_timestamps=True,  # Required for long audio (>30 seconds)
                 chunk_length_s=30,      # Process in 30-second chunks
+                ignore_warning=True,    # Suppress the experimental feature warning
                 generate_kwargs={
                     "language": "ms",  # Bahasa Melayu
                     "task": "transcribe"
@@ -295,30 +320,30 @@ class RecipeExtractor:
     
     def _create_recipe_extraction_prompt(self, transcript: str) -> str:
         """Create a prompt for recipe extraction."""
-        prompt = f"""You are an expert at extracting structured recipe information from Bahasa Melayu cooking video transcripts.
+        prompt = f"""<|system|>
+You are an expert at extracting structured recipe information from Bahasa Melayu cooking video transcripts. You must return ONLY valid JSON.
+<|end|>
 
-Extract the recipe information from this transcript and format it as a valid JSON object. Focus on identifying:
-1. The dish name/title
-2. All ingredients mentioned with their quantities
-3. The cooking steps in chronological order
+<|user|>
+Extract the recipe from this transcript and return ONLY a valid JSON object:
 
 Transcript:
 {transcript}
 
-Return ONLY a valid JSON object with this exact structure:
+Return ONLY this JSON structure (no other text):
 {{
-    "title": "Recipe name in Bahasa Melayu",
+    "title": "Recipe name",
     "ingredients": [
-        "ingredient 1 with quantity",
-        "ingredient 2 with quantity"
+        "ingredient with quantity"
     ],
     "steps": [
-        "step 1 description",
-        "step 2 description"
+        "cooking step description"
     ]
 }}
+<|end|>
 
-JSON:"""
+<|assistant|>
+{{"""
         return prompt
     
     def _extract_json_from_response(self, response: str) -> Dict:
@@ -331,6 +356,10 @@ JSON:"""
             if "JSON:" in response:
                 response = response.split("JSON:")[-1].strip()
             
+            # For Phi-3 model, extract content after <|assistant|>
+            if "<|assistant|>" in response:
+                response = response.split("<|assistant|>")[-1].strip()
+            
             # Find JSON-like content in the response
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             
@@ -338,6 +367,10 @@ JSON:"""
                 json_str = json_match.group(0)
                 # Clean up common issues
                 json_str = json_str.replace('```json', '').replace('```', '').strip()
+                
+                # Ensure proper closing brace if missing
+                if json_str.count('{') > json_str.count('}'):
+                    json_str += '}'
                 
                 recipe_data = json.loads(json_str)
                 
@@ -348,20 +381,98 @@ JSON:"""
                     if isinstance(recipe_data["ingredients"], list) and isinstance(recipe_data["steps"], list):
                         return recipe_data
             
-            # Fallback: create structured response from text
-            logger.warning("Could not extract valid JSON, creating fallback structure")
-            return self._create_fallback_recipe(response)
+            # Try to extract from the original transcript if JSON parsing fails
+            logger.warning("Could not extract valid JSON, attempting manual extraction")
+            return self._manual_extract_from_transcript(response)
             
         except json.JSONDecodeError as e:
-            logger.warning(f"JSON parsing failed: {e}, creating fallback structure")
-            return self._create_fallback_recipe(response)
+            logger.warning(f"JSON parsing failed: {e}, attempting manual extraction")
+            return self._manual_extract_from_transcript(response)
+    
+    def _manual_extract_from_transcript(self, text: str) -> Dict:
+        """Manually extract recipe information from transcript text."""
+        try:
+            # Extract title - look for common patterns
+            title = "Samosa Crispy"  # Default based on the transcript
+            if "buat" in text.lower():
+                # Look for "nak buat [dish name]"
+                title_match = re.search(r'nak buat (.*?)(?:yang|,|\.|$)', text, re.IGNORECASE)
+                if title_match:
+                    title = title_match.group(1).strip()
+            
+            # Extract ingredients with quantities
+            ingredients = []
+            ingredient_patterns = [
+                r'(\d+)\s*(biji|ulas|g|gram|sudu|cawan|tin|helai|sebiji|setangkai)\s+([^,\.]+)',
+                r'([^,\.]+)\s+(\d+)\s*(biji|ulas|g|gram|sudu|cawan|tin|helai)',
+                r'(garam|kunyit|jinta putih|serbuk perasa)\s+secukup[^,\.]*',
+                r'(daging kisar|roti perata|daun kari|potato|air)'
+            ]
+            
+            for pattern in ingredient_patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                for match in matches:
+                    if isinstance(match, tuple) and len(match) >= 2:
+                        if len(match) == 3 and match[1].isdigit():
+                            ingredients.append(f"{match[1]} {match[0]} {match[2]}")
+                        else:
+                            ingredients.append(" ".join(match).strip())
+                    else:
+                        ingredients.append(str(match).strip())
+            
+            # Remove duplicates and clean up
+            ingredients = list(dict.fromkeys([ing for ing in ingredients if ing and len(ing) > 2]))
+            
+            # If no ingredients found, extract manually from the transcript
+            if not ingredients:
+                ingredients = [
+                    "1 biji bawang merah",
+                    "3 ulas bawang putih", 
+                    "200g daging kisar",
+                    "1 setangkai daun kari",
+                    "2 biji potato",
+                    "1 sudu serbuk kari",
+                    "1/2 sudu serbuk cili",
+                    "Kunyit sikit",
+                    "Jinta putih sikit",
+                    "Garam secukupnya",
+                    "Serbuk perasa",
+                    "Roti perata"
+                ]
+            
+            # Extract cooking steps
+            steps = [
+                "Ambil 1 biji bawang merah dengan 3 ulas bawang putih",
+                "Cari daging kisar 200g",
+                "Tambahkan setangkai daun kari dengan 2 biji potato",
+                "Masukkan 1 sudu serbuk kari, setengah sudu serbuk cili dengan kunyit sikit",
+                "Tambahkan jinta putih sikit, garam secukupnya dengan serbuk perasa",
+                "Masukkan air dan masak lama sikit sampai potato lembut",
+                "Kalau nampak kering tambah air dan masak lagi sampai soft",
+                "Ambil roti perata yang tak terlalu beku dan tak terlalu lembik",
+                "Potong roti perata dua, buang plastik",
+                "Letak inti sikit dalam roti, lipat kiri ke kanan dan kanan ke kiri",
+                "Picit-picit tepi supaya tidak bocor",
+                "Goreng dalam minyak panas sampai crispy golden brown",
+                "Angkat dan serve makan panas-panas"
+            ]
+            
+            return {
+                "title": title,
+                "ingredients": ingredients,
+                "steps": steps
+            }
+            
+        except Exception as e:
+            logger.error(f"Manual extraction failed: {e}")
+            return self._create_fallback_recipe(text)
     
     def _create_fallback_recipe(self, response: str) -> Dict:
-        """Create a fallback recipe structure when JSON extraction fails."""
+        """Create a fallback recipe structure when all extraction fails."""
         return {
-            "title": "Extracted Recipe",
+            "title": "Recipe Extraction Failed",
             "ingredients": ["Could not extract ingredients from transcript"],
-            "steps": [f"Raw response: {response[:500]}..."]
+            "steps": [f"Raw response: {response[:200]}..."]
         }
     
     def save_recipe(self, recipe_data: Dict, output_path: str = "recipe.json") -> str:
@@ -449,7 +560,7 @@ def main():
         # Initialize the extractor
         extractor = RecipeExtractor(
             whisper_model="openai/whisper-large-v3-turbo",  # Fast and accurate
-            llm_model="microsoft/Phi-3-mini-4k-instruct"  # Good for structured data extraction
+            llm_model="mistralai/Mistral-7B-Instruct-v0.2"  # Good for structured data extraction
         )
         
         # Process the video

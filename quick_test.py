@@ -23,7 +23,7 @@ def test_with_sample_video():
     # Initialize extractor
     extractor = RecipeExtractor(
         whisper_model="openai/whisper-large-v3-turbo",  # Fast and accurate turbo model
-        llm_model="microsoft/DialoGPT-medium"  # Much better for structured data extraction
+        llm_model="mistralai/Mistral-7B-Instruct-v0.2"  # Much better for structured data extraction
     )
     
     # Test with the first URL (replace with a real one)
@@ -66,7 +66,7 @@ def test_individual_components():
     
     extractor = RecipeExtractor(
         whisper_model="openai/whisper-large-v3-turbo",  # Fast turbo model for testing
-        llm_model="microsoft/DialoGPT-medium"  # Better for structured extraction
+        llm_model="mistralai/Mistral-7B-Instruct-v0.2"  # Better for structured extraction
     )
     
     # Test 1: Audio Download
@@ -119,7 +119,7 @@ def test_with_sample_transcript():
     
     extractor = RecipeExtractor(
         whisper_model="openai/whisper-large-v3-turbo",
-        llm_model="microsoft/Phi-3-mini-4k-instruct"
+        llm_model="mistralai/Mistral-7B-Instruct-v0.2"
     )
     
     try:
