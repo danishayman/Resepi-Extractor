@@ -1,0 +1,14 @@
+yt-dlp
+# openai-whisper  # Replaced with transformers-based Whisper
+transformers>=4.21.0
+accelerate
+bitsandbytes
+datasets
+sentencepiece
+protobuf
+requests
+numpy
+scipy
+huggingface_hub
+torch
+torchaudio
