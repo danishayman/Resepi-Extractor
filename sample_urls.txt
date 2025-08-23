@@ -1,0 +1,16 @@
+# Sample URLs for Recipe Extraction
+# Add your video URLs here, one per line
+# Lines starting with # are comments and will be ignored
+
+# TikTok cooking videos (Malaysian cuisine)
+https://www.tiktok.com/@khairulaming/video/7092671985238478106
+
+# Instagram cooking reels
+# https://www.instagram.com/reel/example_reel_id/
+
+# YouTube cooking shorts
+# https://www.youtube.com/shorts/example_video_id
+
+# Add more URLs below:
+# https://www.tiktok.com/@username/video/video_id
+# https://www.instagram.com/reel/reel_id/

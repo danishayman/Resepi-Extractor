@@ -15,6 +15,7 @@ from config import Config
 from audio_processor import AudioProcessor
 from transcription import TranscriptionService
 from recipe_parser import RecipeParser
+from video_classifier import VideoClassifier
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -53,7 +54,55 @@ class RecipeExtractor:
         self.audio_processor = AudioProcessor(self.config.audio_quality)
         self.transcription_service = TranscriptionService(self.config.whisper_model, self.config.device)
         self.recipe_parser = RecipeParser(self.config.gemini_api_key, self.config.gemini_model)
+        self.video_classifier = VideoClassifier(self.config.gemini_api_key, self.config.gemini_model)
 
+    
+    def classify_video_content(self, transcript: str, video_metadata: Dict = None, 
+                              min_confidence: float = 0.7, use_keyword_fallback: bool = True) -> Tuple[bool, float, str]:
+        """
+        Classify if video content is cooking-related.
+        
+        Args:
+            transcript: Transcribed text from video
+            video_metadata: Optional video metadata
+            min_confidence: Minimum confidence threshold for classification
+            use_keyword_fallback: Whether to use keyword-based fallback if AI classification fails
+            
+        Returns:
+            Tuple of (is_cooking_video, confidence_score, reason)
+        """
+        try:
+            # Try AI-based classification first
+            is_cooking, confidence, reason = self.video_classifier.classify_video(transcript, video_metadata)
+            
+            # If confidence is too low and fallback is enabled, try keyword-based classification
+            if confidence < min_confidence and use_keyword_fallback:
+                logger.info(f"AI classification confidence ({confidence:.2f}) below threshold ({min_confidence}), "
+                           f"trying keyword-based fallback")
+                
+                title = video_metadata.get('title', '') if video_metadata else ''
+                fallback_result = self.video_classifier.classify_from_keywords(transcript, title)
+                
+                # Use fallback result if it has higher confidence
+                if fallback_result[1] > confidence:
+                    is_cooking, confidence, reason = fallback_result
+                    reason = f"Keyword fallback: {reason}"
+            
+            return is_cooking, confidence, reason
+            
+        except Exception as e:
+            logger.error(f"Error in video classification: {e}")
+            
+            # Use keyword-based fallback on error
+            if use_keyword_fallback:
+                try:
+                    title = video_metadata.get('title', '') if video_metadata else ''
+                    return self.video_classifier.classify_from_keywords(transcript, title)
+                except Exception as fallback_error:
+                    logger.error(f"Keyword fallback also failed: {fallback_error}")
+            
+            # Return conservative result on complete failure
+            return False, 0.0, f"Classification failed: {str(e)}"
     
     def save_recipe(self, recipe_data: Dict, output_path: str = None) -> str:
         """
@@ -88,16 +137,22 @@ class RecipeExtractor:
             logger.error(f"Error saving recipe: {e}")
             raise
     
-    def process_video(self, video_url: str, output_json_path: str = None) -> Tuple[Dict, str]:
+    def process_video(self, video_url: str, output_json_path: str = None, 
+                     skip_classification: bool = False, min_confidence: float = 0.7) -> Tuple[Dict, str]:
         """
         Complete pipeline to process a video and extract recipe.
         
         Args:
             video_url: TikTok/Instagram video URL
             output_json_path: Path to save the recipe JSON (default: uses output_dir/recipe.json)
+            skip_classification: Whether to skip cooking video classification
+            min_confidence: Minimum confidence threshold for classification
             
         Returns:
             Tuple of (recipe_data, saved_file_path)
+            
+        Raises:
+            ValueError: If video is classified as non-cooking
         """
         temp_dir = None
         audio_path = None
@@ -106,8 +161,8 @@ class RecipeExtractor:
             # Create temporary directory
             temp_dir = tempfile.mkdtemp()
             
-            # Step 1: Download audio
-            audio_path = self.audio_processor.download_audio(video_url, temp_dir)
+            # Step 1: Download audio and extract video metadata
+            audio_path, video_metadata = self.audio_processor.download_audio_with_metadata(video_url, temp_dir)
             
             # Step 2: Preprocess audio
             processed_audio_path = self.audio_processor.preprocess_audio(audio_path)
@@ -115,10 +170,28 @@ class RecipeExtractor:
             # Step 3: Transcribe audio
             transcript = self.transcription_service.transcribe(processed_audio_path)
             
-            # Step 4: Extract recipe
+            # Step 4: Classify video content (skip if disabled)
+            should_skip = skip_classification if skip_classification is not None else self.config.skip_classification
+            confidence_threshold = min_confidence if min_confidence != 0.7 else self.config.classification_confidence
+            
+            if not should_skip:
+                is_cooking, confidence, reason = self.classify_video_content(
+                    transcript, video_metadata, confidence_threshold
+                )
+                
+                logger.info(f"Video classification: {'COOKING' if is_cooking else 'NON-COOKING'} "
+                           f"(confidence: {confidence:.2f}) - {reason}")
+                
+                if not is_cooking:
+                    raise ValueError(f"Video is not cooking-related: {reason} (confidence: {confidence:.2f})")
+            
+            # Step 5: Extract recipe
             recipe_data = self.recipe_parser.extract_recipe(transcript)
             
-            # Step 5: Save recipe
+            # Step 6: Add video metadata to recipe data
+            recipe_data['video_metadata'] = video_metadata
+            
+            # Step 7: Save recipe
             saved_path = self.save_recipe(recipe_data, output_json_path)
             
             return recipe_data, saved_path

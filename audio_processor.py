@@ -7,7 +7,7 @@ Handles audio download and preprocessing from video URLs.
 import os
 import tempfile
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 import yt_dlp
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,69 @@ class AudioProcessor:
                 
         except Exception as e:
             logger.error(f"Error downloading audio: {e}")
+            raise
+    
+    def get_video_info(self, video_url: str) -> dict:
+        """
+        Extract video metadata including thumbnail URL using yt-dlp.
+        
+        Args:
+            video_url: URL of the video
+            
+        Returns:
+            Dictionary containing video metadata including thumbnail URL
+        """
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+        }
+        
+        try:
+            logger.info(f"Extracting video metadata from: {video_url}")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+                
+                # Extract relevant metadata
+                metadata = {
+                    'title': info.get('title'),
+                    'description': info.get('description'),
+                    'thumbnail': info.get('thumbnail'),
+                    'duration': info.get('duration'),
+                    'uploader': info.get('uploader'),
+                    'upload_date': info.get('upload_date'),
+                    'view_count': info.get('view_count'),
+                    'like_count': info.get('like_count'),
+                }
+                
+                logger.info(f"Video metadata extracted successfully. Thumbnail URL: {metadata.get('thumbnail')}")
+                return metadata
+                
+        except Exception as e:
+            logger.error(f"Error extracting video metadata: {e}")
+            return {}
+    
+    def download_audio_with_metadata(self, video_url: str, output_dir: Optional[str] = None) -> Tuple[str, dict]:
+        """
+        Download audio and extract video metadata in one operation.
+        
+        Args:
+            video_url: URL of the video
+            output_dir: Directory to save audio file
+            
+        Returns:
+            Tuple of (audio_file_path, video_metadata)
+        """
+        try:
+            # First get metadata
+            metadata = self.get_video_info(video_url)
+            
+            # Then download audio
+            audio_path = self.download_audio(video_url, output_dir)
+            
+            return audio_path, metadata
+            
+        except Exception as e:
+            logger.error(f"Error downloading audio with metadata: {e}")
             raise
     
     def preprocess_audio(self, audio_path: str) -> str:

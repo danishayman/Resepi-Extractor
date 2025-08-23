@@ -65,39 +65,52 @@ class RecipeParser:
     
     def _create_recipe_extraction_prompt(self, transcript: str) -> str:
         """Create a prompt for recipe extraction."""
-        prompt = f"""You are a helpful assistant that extracts structured recipe information from cooking video transcripts in Bahasa Melayu.
+        prompt = f"""You are a helpful assistant that extracts structured recipe information from cooking video transcripts in casual, everyday Bahasa Melayu.
 
 Given the following transcript from a cooking video, extract and return ONLY a valid JSON object with the recipe information. Do not include any other text, explanations, or markdown formatting.
 
 The JSON should have this exact structure:
 {{
-    "title": "Recipe name in Bahasa Melayu",
+    "title": "Recipe name (can mix English and Bahasa Melayu - use whatever sounds natural, e.g. 'Chocolate Chip Cookies', 'Nasi Lemak Special', 'Korean BBQ Chicken')",
+    "description": "Brief description in casual Bahasa Melayu with some English words (2-3 sentences, like how people normally talk)",
+    "cuisine_type": "Type of cuisine (boleh guna English atau Malay, contoh: 'Western', 'Masakan Melayu', 'Korean', 'Dessert', 'Chinese', 'Fusion', etc)",
+    "tags": ["tag1", "tag2", "tag3"],
     "ingredients": {{
         "main_ingredients": [
             {{
-                "name": "Ingredient name",
-                "quantity": "Amount with unit"
+                "name": "Ingredient name (guna nama biasa, boleh English/Malay)",
+                "quantity": "Amount with unit (contoh: '2 cawan', '500g', '1 tbsp')"
             }}
         ],
         "spices_and_seasonings": [
             {{
-                "name": "Spice or seasoning name", 
+                "name": "Spice or seasoning name (nama biasa yang orang guna)", 
                 "quantity": "Amount with unit"
             }}
         ]
     }},
-    "instructions": [
-        "Step 1 description in detail",
-        "Step 2 description in detail"
-    ]
+    "instructions": {{
+        "step1": "First specific action (guna bahasa biasa, tak perlu formal)",
+        "step2": "Second specific action",
+        "step3": "Third specific action",
+        "step4": "Fourth specific action"
+    }}
 }}
 
 Important guidelines:
+- Guna bahasa biasa macam orang cakap sehari-hari - tak payah terlalu formal
+- For titles: Boleh guna English words especially for popular dish names (contoh: "Creamy Carbonara", "Mango Sticky Rice", "Chicken Rendang")
 - Group ingredients logically into sections like "main_ingredients", "spices_and_seasonings", "garnish", etc.
 - Each ingredient should have separate "name" and "quantity" fields
 - If no clear grouping is possible, use "main_ingredients" as the default section
-- Make instructions detailed and clear
-- Keep everything in Bahasa Melayu
+- BREAK DOWN instructions into individual, specific steps - each step should contain ONLY ONE action
+- Each step should be clear and concise (1-2 sentences maximum)
+- Use as many steps as needed (step1, step2, step3, step4, step5, etc.) to properly break down the cooking process
+- Contoh good individual steps: "Panaskan oven 180°C", "Mix cream cheese dengan gula sampai smooth", "Masukkan telur satu-satu", "Tuang mixture dalam pan"
+- For description: Write a brief, appetizing description - guna bahasa santai dengan sikit English words kalau perlu
+- For cuisine_type: Identify the type of cuisine - boleh guna English atau Malay, whatever sounds more natural
+- For tags: Include 3-5 relevant tags - mix English/Malay yang sounds natural (contoh: "easy", "sedap", "dessert", "spicy", "comfort food")
+- Guna mix English dan Bahasa Melayu yang sounds natural - macam orang Malaysia cakap biasa
 - Return ONLY the JSON object, nothing else
 
 Transcript:
@@ -130,7 +143,9 @@ JSON:"""
                 if all(key in recipe_data for key in required_keys):
                     # Validate ingredients structure
                     if isinstance(recipe_data["ingredients"], dict) and recipe_data["ingredients"]:
-                        return recipe_data
+                        # Validate instructions structure (should be dict, not list)
+                        if isinstance(recipe_data["instructions"], dict) and recipe_data["instructions"]:
+                            return recipe_data
             
             # Try parsing the entire cleaned response as JSON
             try:
@@ -138,7 +153,9 @@ JSON:"""
                 if all(key in recipe_data for key in ["title", "ingredients", "instructions"]):
                     # Validate ingredients structure
                     if isinstance(recipe_data["ingredients"], dict) and recipe_data["ingredients"]:
-                        return recipe_data
+                        # Validate instructions structure (should be dict, not list)
+                        if isinstance(recipe_data["instructions"], dict) and recipe_data["instructions"]:
+                            return recipe_data
             except:
                 pass
             
@@ -204,6 +221,11 @@ JSON:"""
         
         return {
             "title": title,
+            "description": "Recipe yang extract dari cooking video ni",
+            "cuisine_type": "Mixed",
+            "tags": ["recipe", "sedap", "homemade"],
             "ingredients": structured_ingredients,
-            "instructions": instructions if instructions else ["Could not extract instructions"]
+            "instructions": {
+                f"step{i+1}": instruction for i, instruction in enumerate(instructions)
+            } if instructions else {"step1": "Tak dapat extract instructions properly"}
         }
