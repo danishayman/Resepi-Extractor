@@ -7,6 +7,8 @@ Handles audio download and preprocessing from video URLs.
 import os
 import tempfile
 import logging
+import requests
+import hashlib
 from typing import Optional, Tuple
 import yt_dlp
 
@@ -108,6 +110,56 @@ class AudioProcessor:
         except Exception as e:
             logger.error(f"Error extracting video metadata: {e}")
             return {}
+    
+    def download_thumbnail(self, thumbnail_url: str, source_url: str, output_dir: Optional[str] = None) -> Optional[str]:
+        """
+        Download thumbnail image from URL and save locally.
+        
+        Args:
+            thumbnail_url: URL of the thumbnail image
+            source_url: Original video URL (used for generating filename)
+            output_dir: Directory to save thumbnail (defaults to 'thumbnails')
+            
+        Returns:
+            Path to downloaded thumbnail file, or None if failed
+        """
+        if not thumbnail_url:
+            logger.warning("No thumbnail URL provided")
+            return None
+            
+        if output_dir is None:
+            output_dir = "thumbnails"
+        
+        # Create thumbnails directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        try:
+            # Generate filename based on source URL hash
+            url_hash = hashlib.md5(source_url.encode()).hexdigest()[:12]
+            filename = f"thumb_{url_hash}.jpg"
+            output_path = os.path.join(output_dir, filename)
+            
+            # Skip if file already exists
+            if os.path.exists(output_path):
+                logger.info(f"Thumbnail already exists: {output_path}")
+                return output_path
+            
+            # Download thumbnail
+            logger.info(f"Downloading thumbnail from: {thumbnail_url}")
+            response = requests.get(thumbnail_url, timeout=30, stream=True)
+            response.raise_for_status()
+            
+            # Save thumbnail
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            logger.info(f"Thumbnail downloaded successfully: {output_path}")
+            return output_path
+            
+        except Exception as e:
+            logger.error(f"Error downloading thumbnail: {e}")
+            return None
     
     def download_audio_with_metadata(self, video_url: str, output_dir: Optional[str] = None) -> Tuple[str, dict]:
         """
